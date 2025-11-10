@@ -1,0 +1,12 @@
+{
+  "private": true,
+  "scripts": {
+    "fetch": ".\\venv\\Scripts\\python.exe backend\\fetch_epic.py",
+    "dev:api": ".\\venv\\Scripts\\python.exe backend\\app.py",
+    "dev:web": "npm --prefix frontend run dev",
+    "dev:all": "concurrently -k -n API,WEB -c auto \"npm run dev:api\" \"npm run dev:web\""
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  }
+}
