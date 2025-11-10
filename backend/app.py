@@ -1,3 +1,4 @@
+# backend/app.py
 from pathlib import Path
 from datetime import datetime
 import os
@@ -8,22 +9,22 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 from fetch_epic import main as fetch_once
 
+# ----- Paths -----
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
 IMAGES_DIR = DATA_DIR / "images"
 
+# ----- App -----
 app = Flask(__name__)
 CORS(app)
 
-# ---- helpers ----
+# ----- Helpers -----
 def cleanup_images(keep: int = 5):
     """Keep only the newest N images in data/images/."""
     IMAGES_DIR.mkdir(parents=True, exist_ok=True)
-    imgs = sorted(
-        IMAGES_DIR.glob("*.png"),
-        key=lambda p: p.stat().st_mtime,
-        reverse=True
-    )
+    imgs = sorted(IMAGES_DIR.glob("*.png"),
+                  key=lambda p: p.stat().st_mtime,
+                  reverse=True)
     for old in imgs[keep:]:
         try:
             old.unlink()
@@ -31,7 +32,10 @@ def cleanup_images(keep: int = 5):
             print("Cleanup error:", old, e)
 
 def warm_start():
-    """Fetch once and cleanup cache (safe to call multiple times)."""
+    """
+    Fetch once and cleanup cache.
+    Safe to call multiple times; used both locally and on first cloud request.
+    """
     try:
         fetch_once()
         cleanup_images(keep=5)
@@ -39,7 +43,7 @@ def warm_start():
     except Exception as e:
         print("Warm fetch failed:", e)
 
-# ---- routes ----
+# ----- Routes -----
 @app.get("/api/latest")
 def latest():
     meta = (DATA_DIR / "metadata.json")
@@ -49,14 +53,14 @@ def latest():
                               mimetype="application/json")
 
 @app.get("/images/<path:name>")
-def images(name):
+def images(name: str):
     return send_from_directory(IMAGES_DIR, name)
 
 @app.get("/")
 def root():
     return jsonify({"ok": True, "endpoints": ["/api/latest", "/images/<file>"]})
 
-# Manual refresh for cloud (hit this once after deploy)
+# Manual refresh endpoint you can hit after deploy (or any time)
 @app.route("/api/refresh", methods=["GET", "POST"])
 def api_refresh():
     try:
@@ -65,25 +69,34 @@ def api_refresh():
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
-# In production (gunicorn on Render), before_first_request will trigger warm_start once.
-@app.before_first_request
-def _warm_once():
-    # Avoid double work if you already hit /api/refresh
-    if not (DATA_DIR / "metadata.json").exists():
-        warm_start()
+# ----- Flask 3.x compatible "run once" init -----
+_initialized = False
 
-# ---- local dev boot ----
+@app.before_request
+def ensure_initialized():
+    """
+    Flask 3.x removed before_first_request; this guards a one-time warm_start
+    when the first real request hits the service (works on Render + locally).
+    """
+    global _initialized
+    if not _initialized:
+        # If data already exists (e.g., you called /api/refresh) skip work
+        if not (DATA_DIR / "metadata.json").exists():
+            warm_start()
+        _initialized = True
+
+# ----- Local dev boot only -----
 if __name__ == "__main__":
-    # Warm right away for local dev
+    # Warm immediately for local dev
     warm_start()
 
-    # Schedule every 3 hours (local only; not reliable on free cloud dynos)
+    # Local scheduler (free cloud dynos may sleep, so keep this local)
     scheduler = BackgroundScheduler(daemon=True)
     def scheduled_job():
         warm_start()
         print("Scheduled fetch & cleanup @", datetime.now().isoformat())
-    scheduler.add_job(scheduled_job, "interval", hours=3,
-                      next_run_time=datetime.now())
+    scheduler.add_job(scheduled_job, "interval", hours=3, next_run_time=datetime.now())
     scheduler.start()
 
+    # Use localhost for dev
     app.run(host="127.0.0.1", port=5000, debug=True)
